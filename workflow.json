@@ -1,0 +1,197 @@
+{
+  "zap_name": "Automated E-Commerce Order Processing & Exception Handling",
+  "zap_description": "Hourly batch order ingestion, parsing, looping, and conditional routing into fulfillment or exception-handling paths.",
+  "status": "draft",
+  "trigger": {
+    "step_id": "1",
+    "app": "Schedule by Zapier",
+    "event": "Every Hour",
+    "config": {
+      "frequency": "hourly",
+      "minute_of_hour": 0
+    },
+    "output_fields": ["trigger_timestamp"]
+  },
+  "steps": [
+    {
+      "step_id": "2",
+      "type": "code",
+      "app": "Code by Zapier",
+      "action": "Run Python",
+      "title": "Parse Order Payload",
+      "description": "Deserializes raw batch payload, normalizes fields, flattens line items into an array.",
+      "input": {
+        "raw_payload": "{{1.batch_payload}}"
+      },
+      "code_language": "python3",
+      "code_summary": "Parses JSON batch payload, validates schema, flattens nested line_items into a normalized list with fields: order_id, sku, item_value, stock_available, payment_status, customer_email, priority_customer.",
+      "output_fields": ["line_items"]
+    },
+    {
+      "step_id": "3",
+      "type": "loop",
+      "app": "Looping by Zapier",
+      "action": "Create Loop From Line Items",
+      "title": "Loop Over Line Items",
+      "input": {
+        "values_to_loop": "{{2.line_items}}"
+      },
+      "output_fields": ["loop_item"]
+    },
+    {
+      "step_id": "4",
+      "type": "paths",
+      "app": "Paths by Zapier",
+      "title": "Split Orders by Status",
+      "input": {
+        "order_value": "{{3.loop_item.item_value}}",
+        "stock_available": "{{3.loop_item.stock_available}}",
+        "payment_status": "{{3.loop_item.payment_status}}"
+      },
+      "paths": [
+        {
+          "path_id": "A",
+          "path_label": "High-Value / In-Stock Orders",
+          "conditions": {
+            "logic": "AND",
+            "rules": [
+              { "field": "{{3.loop_item.item_value}}", "operator": "greater_than", "value": 500 },
+              { "field": "{{3.loop_item.stock_available}}", "operator": "is_true" }
+            ]
+          },
+          "steps": [
+            {
+              "step_id": "5A",
+              "type": "table_action",
+              "app": "Zapier Tables",
+              "action": "Search Records",
+              "title": "Search Inventory Records",
+              "table": "Inventory",
+              "input": {
+                "search_field": "sku",
+                "search_value": "{{3.loop_item.sku}}"
+              },
+              "output_fields": ["inventory_record_id", "qty_on_hand"]
+            },
+            {
+              "step_id": "6A",
+              "type": "filter",
+              "app": "Filter by Zapier",
+              "title": "Validate Payment Status",
+              "condition": {
+                "field": "{{3.loop_item.payment_status}}",
+                "operator": "text_exactly_matches",
+                "value": "Paid"
+              }
+            },
+            {
+              "step_id": "7A",
+              "type": "action",
+              "app": "Gmail",
+              "action": "Send Email",
+              "title": "Send Order Confirmation Email",
+              "input": {
+                "to": "{{3.loop_item.customer_email}}",
+                "subject": "Your order {{3.loop_item.order_id}} is confirmed!",
+                "body": "Order confirmation details including SKU, quantity, and estimated delivery."
+              }
+            },
+            {
+              "step_id": "8A",
+              "type": "table_action",
+              "app": "Zapier Tables",
+              "action": "Update Record + Create Record",
+              "title": "Update Inventory Balance & Create Audit Log",
+              "operations": [
+                {
+                  "table": "Inventory",
+                  "action": "update_record",
+                  "record_id": "{{5A.inventory_record_id}}",
+                  "fields": {
+                    "qty_on_hand": "{{5A.qty_on_hand}} - 1",
+                    "last_updated": "{{1.trigger_timestamp}}"
+                  }
+                },
+                {
+                  "table": "AuditLog",
+                  "action": "create_record",
+                  "fields": {
+                    "order_id": "{{3.loop_item.order_id}}",
+                    "sku": "{{3.loop_item.sku}}",
+                    "qty_change": -1,
+                    "timestamp": "{{1.trigger_timestamp}}",
+                    "actor": "Zap"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "path_id": "B",
+          "path_label": "Out of Stock / Exception Orders",
+          "conditions": {
+            "logic": "OR",
+            "rules": [
+              { "field": "{{3.loop_item.stock_available}}", "operator": "is_false" },
+              { "field": "{{3.loop_item.payment_status}}", "operator": "text_exactly_matches", "value": "On Hold" }
+            ]
+          },
+          "steps": [
+            {
+              "step_id": "5B",
+              "type": "table_action",
+              "app": "Zapier Tables",
+              "action": "Search Records",
+              "title": "Search Pending Exceptions Table",
+              "table": "Exceptions",
+              "input": {
+                "search_field": "order_id",
+                "search_value": "{{3.loop_item.order_id}}"
+              },
+              "output_fields": ["existing_exception_id"]
+            },
+            {
+              "step_id": "6B",
+              "type": "filter",
+              "app": "Filter by Zapier",
+              "title": "Check Priority Customer Flag",
+              "condition": {
+                "field": "{{3.loop_item.priority_customer}}",
+                "operator": "is_true"
+              }
+            },
+            {
+              "step_id": "7B",
+              "type": "action",
+              "app": "Gmail",
+              "action": "Send Email",
+              "title": "Send Alert Email to Support Team",
+              "input": {
+                "to": "support-team@company.com",
+                "subject": "Priority Exception: Order {{3.loop_item.order_id}}",
+                "body": "Order flagged as exception. Issue type, customer, and priority status included."
+              }
+            },
+            {
+              "step_id": "8B",
+              "type": "table_action",
+              "app": "Zapier Tables",
+              "action": "Create Record",
+              "title": "Create Exception Record in Database",
+              "table": "Exceptions",
+              "fields": {
+                "order_id": "{{3.loop_item.order_id}}",
+                "sku": "{{3.loop_item.sku}}",
+                "issue_type": "out_of_stock_or_payment_hold",
+                "priority_customer": "{{3.loop_item.priority_customer}}",
+                "status": "Open",
+                "created_at": "{{1.trigger_timestamp}}"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
