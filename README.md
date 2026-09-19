@@ -50,4 +50,4 @@ Path B - Out of Stock and Exception Orders:
 
 - README.md: Project documentation
 - workflow.json: Exported Zapier workflow structure
-- project-thumbnail.png: Zapier canvas layout preview
+- Workflow.png: Zapier canvas layout preview
